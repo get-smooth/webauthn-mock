@@ -81,6 +81,16 @@ bash run.sh --challenge 1711126985 --username qdqd.smoo.th
 
 As of the current version, the assertion flow simulation is not yet implemented. This functionality is essential for testing the login process with WebAuthn and will be added in future updates.
 
+## Build
+
+To build the mock WebAuthn library, you can use the following script:
+
+```bash
+bash build.sh
+```
+
+The script will compile the Go code and generate a binary file named `register` in the `bin` directory. The generated file is a binary executable specific to your operating system and architecture.
+
 ## License
 
 This mock WebAuthn library is open-source and available under the [MIT License](./LICENSE). Feel free to use, modify, and distribute it according to the license terms.

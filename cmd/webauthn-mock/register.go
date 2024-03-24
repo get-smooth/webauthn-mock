@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/descope/virtualwebauthn"
+	"github.com/fxamacker/cbor/v2"
 	"github.com/fxamacker/webauthn"
 	_ "github.com/fxamacker/webauthn/packed"
 )
@@ -21,7 +23,7 @@ const (
 	DefaultUserName     = "qdqd"
 )
 
-var webauthnConfig = &webauthn.Config{
+var webauthnConfig = webauthn.Config{
 	RPID:                    WebauthnDomain,
 	RPName:                  WebauthnDisplayName,
 	Timeout:                 uint64(60000),
@@ -32,18 +34,11 @@ var webauthnConfig = &webauthn.Config{
 	AuthenticatorAttachment: webauthn.AuthenticatorPlatform,
 }
 
-type ExtendedAttestationOptions struct {
-	*virtualwebauthn.AttestationOptions        // Embedding AttestationOptions struct
-	Challenge                           string `json:"challenge,omitempty"` // Override Challenge field
-}
-
 type User struct {
 	ID          string `json:"id,omitempty"`
 	Name        string `json:"name,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
 }
-
-type WebAuthnConfigJSON string
 
 type WebauthnAttestation struct {
 	User      *webauthn.User
@@ -51,11 +46,59 @@ type WebauthnAttestation struct {
 	Options   string
 }
 
+type FullClientData struct {
+	Type      string `json:"type"`
+	Challenge string `json:"challenge"`
+	Origin    string `json:"origin"`
+}
+type WebauthnResponse struct {
+	Id       string `json:"id,omitempty"`
+	RawId    string `json:"rawId,omitempty"`
+	Response struct {
+		AttestationObject string `json:"attestationObject,omitempty"`
+		ClientDataJSON    string `json:"clientDataJSON,omitempty"`
+	}
+}
+
+type attestationStatement struct {
+	Algorithm int    `json:"alg"`
+	Signature []byte `json:"sig"`
+}
+type attestationStatementClean struct {
+	Algorithm int    `json:"alg"`
+	Signature string `json:"sig"`
+}
+type attestationObject struct {
+	Format    string               `json:"fmt"`
+	Statement attestationStatement `json:"attStmt"`
+	AuthData  []byte               `json:"authData"`
+}
+
+type FullAttestationObject struct {
+	Raw64     string                    `json:"raw64,omitempty"`
+	Format    string                    `json:"fmt"`
+	Statement attestationStatementClean `json:"attStmt"`
+	AuthData  string                    `json:"authData"`
+}
+
+type WebauthnResponseComplete struct {
+	Id                string `json:"id,omitempty"`
+	RawId             string `json:"rawId,omitempty"`
+	AttestationObject FullAttestationObject
+	ClientDataJSON    FullClientData
+}
+
+type WebAuthnResponseRaw struct {
+	AttestationObject string `json:"AttestationObject,omitempty"`
+	ClientDataJSON    string `json:"clientDataJSON,omitempty"`
+}
+
 type WebAuthnRegister struct {
-	WebauthnUser     User                       `json:"user,omitempty"`
-	WebauthnConfig   string                     `json:"config,omitempty"`
-	WebauthnOptions  ExtendedAttestationOptions `json:"options,omitempty"`
-	WebauthnResponse string                     `json:"response,omitempty"`
+	WebauthnUser             User                                `json:"user,omitempty"`
+	WebauthnConfig           webauthn.Config                     `json:"config,omitempty"`
+	WebauthnOptions          *virtualwebauthn.AttestationOptions `json:"options,omitempty"`
+	WebauthnResponseComplete WebauthnResponseComplete            `json:"responseDecoded,omitempty"`
+	WebAuthnResponseRaw      WebAuthnResponseRaw                 `json:"response,omitempty"`
 }
 
 func register(challenge string, username string) (*virtualwebauthn.AttestationOptions, string) {
@@ -115,7 +158,7 @@ func startWebauthnRegister(challenge string, username string) *WebauthnAttestati
 	}
 
 	// Generate the attestation options
-	options, _ := webauthn.NewAttestationOptions(webauthnConfig, user)
+	options, _ := webauthn.NewAttestationOptions(&webauthnConfig, user)
 
 	// If a challenge flag was provided, set it in the options
 	if len(challenge) > 0 {
@@ -170,19 +213,70 @@ func newWebauthnUser(username string) *webauthn.User {
 
 }
 
+// marshals a struct to JSON either in pretty or compact format
+func MarshalJSON(value any, pretty string) []byte {
+	// If the pretty flag is set, pretty print the JSON
+	if len(pretty) > 0 {
+		valueJSON, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			panic(fmt.Sprintf("Error marshalling attestation options: %v", err))
+		}
+		return valueJSON
+	}
+
+	// Otherwise, compact print the JSON
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Sprintf("Error marshalling attestation options: %v", err))
+	}
+	return valueJSON
+}
+
 func main() {
 	// Parse command line arguments
-	challenge := flag.String("challenge", "", "an optional argument")
-	username := flag.String("username", "", "an optional argument")
+	challenge := flag.String("challenge", "", "An optional argument to set a specific challenge")
+	username := flag.String("username", "", "An optional argument to set a specific username")
+	pretty := flag.String("pretty", "", "An optional argument to pretty print the JSON output")
 	flag.Parse()
 
 	// Run a webauthn attestation flow
 	attestationOptions, attestationResponse := register(*challenge, *username)
 
-	// Marshal the webauthn config to JSON for sending to the client
-	webauthnConfigJSON, err := json.MarshalIndent(webauthnConfig, "", "  ")
+	// Unmarshal the webauthn response to get the attestation object and clientDataJSON
+	var WebauthnResponse WebauthnResponse
+	json.Unmarshal([]byte(attestationResponse), &WebauthnResponse)
+
+	// Decode the clientDataJSON from Base64
+	decodedClientDataBytes, err := base64.RawURLEncoding.DecodeString(WebauthnResponse.Response.ClientDataJSON)
 	if err != nil {
-		panic(fmt.Sprintf("Error marshalling attestation options: %v", err))
+		panic(err)
+	}
+	// Now unmarshal the JSON bytes into the struct
+	var clientData FullClientData
+	err = json.Unmarshal(decodedClientDataBytes, &clientData)
+	if err != nil {
+		panic(err)
+	}
+	// override the challenge to be a hex string
+	clientData.Challenge = encodeToHex([]byte(clientData.Challenge))
+
+	// Decode the attestationObject from Base64
+	decodedAttestationObjectBytes, err := base64.RawURLEncoding.DecodeString(WebauthnResponse.Response.AttestationObject)
+	if err != nil {
+		panic(err)
+	}
+
+	// The data structure to decode into
+	var result attestationObject
+	cbor.Unmarshal(decodedAttestationObjectBytes, &result)
+	if err != nil {
+		panic(err)
+	}
+
+	// Decode the WebauthnResponse.Id from Base64
+	WebauthnResponseIdByte, err := base64.RawURLEncoding.DecodeString(WebauthnResponse.Id)
+	if err != nil {
+		log.Fatalf("error decoding base64 string: %v", err)
 	}
 
 	// Create the WebAuthnRegister struct to hold all the data
@@ -192,17 +286,29 @@ func main() {
 			Name:        attestationOptions.UserName,
 			DisplayName: attestationOptions.UserDisplayName,
 		},
-		string(webauthnConfigJSON),
-		ExtendedAttestationOptions{
-			AttestationOptions: attestationOptions,
-			Challenge:          encodeChallenge(attestationOptions.Challenge),
+		webauthnConfig,
+		attestationOptions,
+		WebauthnResponseComplete{
+			Id:    encodeToHex(WebauthnResponseIdByte),
+			RawId: WebauthnResponse.RawId,
+			AttestationObject: FullAttestationObject{
+				Format: result.Format,
+				Statement: attestationStatementClean{
+					Algorithm: result.Statement.Algorithm,
+					Signature: encodeToHex(result.Statement.Signature),
+				},
+				AuthData: encodeToHex(result.AuthData),
+			},
+			ClientDataJSON: clientData,
 		},
-		attestationResponse,
-	}
-	webAuthnRegisterDataJSON, err := json.MarshalIndent(webauthnRegister, "", "  ")
-	if err != nil {
-		panic(fmt.Sprintf("Error marshalling attestation options: %v", err))
+		WebAuthnResponseRaw{
+			AttestationObject: encodeToHex(decodedAttestationObjectBytes),
+			ClientDataJSON:    encodeToHex(decodedClientDataBytes),
+		},
 	}
 
-	fmt.Println(string(webAuthnRegisterDataJSON))
+	// Output the data in JSON format
+	webAuthnRegisterDataJSON := MarshalJSON(webauthnRegister, *pretty)
+	fmt.Print(string(webAuthnRegisterDataJSON))
+
 }

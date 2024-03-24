@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/asn1"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"math/big"
 	"strings"
 	"time"
 
@@ -35,9 +38,9 @@ var webauthnConfig = webauthn.Config{
 }
 
 type User struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
 }
 
 type WebauthnAttestation struct {
@@ -52,12 +55,16 @@ type FullClientData struct {
 	Origin    string `json:"origin"`
 }
 type WebauthnResponse struct {
-	Id       string `json:"id,omitempty"`
-	RawId    string `json:"rawId,omitempty"`
+	Id       string `json:"id"`
+	RawId    string `json:"rawId"`
 	Response struct {
-		AttestationObject string `json:"attestationObject,omitempty"`
-		ClientDataJSON    string `json:"clientDataJSON,omitempty"`
+		AttestationObject string `json:"attestationObject"`
+		ClientDataJSON    string `json:"clientDataJSON"`
 	}
+}
+
+type ECDSASignature struct {
+	R, S *big.Int
 }
 
 type attestationStatement struct {
@@ -67,6 +74,8 @@ type attestationStatement struct {
 type attestationStatementClean struct {
 	Algorithm int    `json:"alg"`
 	Signature string `json:"sig"`
+	R         string `json:"r"`
+	S         string `json:"s"`
 }
 type attestationObject struct {
 	Format    string               `json:"fmt"`
@@ -75,30 +84,43 @@ type attestationObject struct {
 }
 
 type FullAttestationObject struct {
-	Raw64     string                    `json:"raw64,omitempty"`
+	Raw64     string                    `json:"raw64"`
 	Format    string                    `json:"fmt"`
 	Statement attestationStatementClean `json:"attStmt"`
-	AuthData  string                    `json:"authData"`
+	AuthData  AuthDataDecoded           `json:"authData"`
 }
 
 type WebauthnResponseComplete struct {
-	Id                string `json:"id,omitempty"`
-	RawId             string `json:"rawId,omitempty"`
+	Id                string `json:"id"`
+	RawId             string `json:"rawId"`
 	AttestationObject FullAttestationObject
 	ClientDataJSON    FullClientData
 }
 
 type WebAuthnResponseRaw struct {
-	AttestationObject string `json:"AttestationObject,omitempty"`
-	ClientDataJSON    string `json:"clientDataJSON,omitempty"`
+	AttestationObject string `json:"attestationObject"`
+	ClientDataJSON    string `json:"clientDataJSON"`
+	AuthData          string `json:"authData"`
 }
 
 type WebAuthnRegister struct {
-	WebauthnUser             User                                `json:"user,omitempty"`
-	WebauthnConfig           webauthn.Config                     `json:"config,omitempty"`
-	WebauthnOptions          *virtualwebauthn.AttestationOptions `json:"options,omitempty"`
-	WebauthnResponseComplete WebauthnResponseComplete            `json:"responseDecoded,omitempty"`
-	WebAuthnResponseRaw      WebAuthnResponseRaw                 `json:"response,omitempty"`
+	WebauthnUser             User                                `json:"user"`
+	WebauthnConfig           webauthn.Config                     `json:"config"`
+	WebauthnOptions          *virtualwebauthn.AttestationOptions `json:"options"`
+	WebauthnResponseComplete WebauthnResponseComplete            `json:"responseDecoded"`
+	WebAuthnResponseRaw      WebAuthnResponseRaw                 `json:"response"`
+}
+
+type AuthDataDecoded struct {
+	RpIdHash            string `json:"rpIdHash"`
+	Flags               string `json:"flags"`
+	SignCount           string `json:"signCount"`
+	Aaguid              string `json:"aaguid"`
+	CredentialIdLength  uint16 `json:"credentialIdLength"`
+	CredentialId        string `json:"credentialId"`
+	CredentialPublicKey string `json:"credentialPublicKey"`
+	PubKeyX             string `json:"pubKeyX"`
+	PubKeyY             string `json:"pubKeyY"`
 }
 
 func register(challenge string, username string) (*virtualwebauthn.AttestationOptions, string) {
@@ -232,6 +254,65 @@ func MarshalJSON(value any, pretty string) []byte {
 	return valueJSON
 }
 
+func decodeAuthData(authData []byte) AuthDataDecoded {
+	// Ensure authData is at least 37 bytes
+	if len(authData) < 37 {
+		panic("authData is too short")
+	}
+
+	// Parse rpIdHash
+	rpIdHash := authData[:32]
+
+	// Parse flags
+	flags := authData[32]
+
+	// Parse signCount
+	signCount := authData[33:37]
+
+	// Offset where attestedCredentialData starts
+	offset := 37
+
+	// AAGUID is the next 16 bytes
+	aaguid := authData[offset : offset+16]
+	offset += 16
+
+	// credentialIdLength is the next 2 bytes
+	credentialIdLength := binary.BigEndian.Uint16(authData[offset : offset+2])
+	offset += 2
+
+	// credentialId is the next credentialIdLength bytes
+	credentialId := authData[offset : offset+int(credentialIdLength)]
+	offset += int(credentialIdLength)
+
+	// The remaining bytes are for credentialPublicKey which is COSE-encoded.
+	// Its parsing is more involved and depends on your needs.
+	credentialPublicKey := authData[offset:]
+
+	// Decode the credentialPublicKey
+	var coseMap map[int]interface{}
+	if err := cbor.Unmarshal(credentialPublicKey, &coseMap); err != nil {
+		panic(err)
+	}
+
+	// Extract the x and y coordinates of the public key and convert them to big.Int
+	xBytes := coseMap[-2].([]byte)
+	yBytes := coseMap[-3].([]byte)
+	x := new(big.Int).SetBytes(xBytes)
+	y := new(big.Int).SetBytes(yBytes)
+
+	return AuthDataDecoded{
+		RpIdHash:            encodeToHex(rpIdHash),
+		Flags:               fmt.Sprintf("%08b", flags),
+		SignCount:           encodeToHex(signCount),
+		Aaguid:              encodeToHex(aaguid),
+		CredentialIdLength:  credentialIdLength,
+		CredentialId:        encodeToHex(credentialId),
+		CredentialPublicKey: encodeToHex(credentialPublicKey),
+		PubKeyX:             "0x" + x.Text(16),
+		PubKeyY:             "0x" + y.Text(16),
+	}
+}
+
 func main() {
 	// Parse command line arguments
 	challenge := flag.String("challenge", "", "An optional argument to set a specific challenge")
@@ -279,6 +360,13 @@ func main() {
 		log.Fatalf("error decoding base64 string: %v", err)
 	}
 
+	// Decode the authData
+	decodedAuthData := decodeAuthData(result.AuthData)
+
+	// Extract r and s from the DER-encoded signature
+	var sig ECDSASignature
+	asn1.Unmarshal(result.Statement.Signature, &sig)
+
 	// Create the WebAuthnRegister struct to hold all the data
 	webauthnRegister := WebAuthnRegister{
 		User{
@@ -296,19 +384,21 @@ func main() {
 				Statement: attestationStatementClean{
 					Algorithm: result.Statement.Algorithm,
 					Signature: encodeToHex(result.Statement.Signature),
+					R:         "0x" + sig.R.Text(16),
+					S:         "0x" + sig.S.Text(16),
 				},
-				AuthData: encodeToHex(result.AuthData),
+				AuthData: decodedAuthData,
 			},
 			ClientDataJSON: clientData,
 		},
 		WebAuthnResponseRaw{
 			AttestationObject: encodeToHex(decodedAttestationObjectBytes),
 			ClientDataJSON:    encodeToHex(decodedClientDataBytes),
+			AuthData:          encodeToHex(result.AuthData),
 		},
 	}
 
 	// Output the data in JSON format
 	webAuthnRegisterDataJSON := MarshalJSON(webauthnRegister, *pretty)
 	fmt.Print(string(webAuthnRegisterDataJSON))
-
 }

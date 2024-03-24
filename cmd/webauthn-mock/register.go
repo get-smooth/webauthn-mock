@@ -338,8 +338,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// override the challenge to be a hex string
-	clientData.Challenge = encodeToHex([]byte(clientData.Challenge))
+
+	// Decode the Base64URL string to bytes then encode to hex
+	decodedBytes, err := base64.RawURLEncoding.DecodeString(clientData.Challenge)
+	if err != nil {
+		fmt.Println("Error decoding base64URL:", err)
+		return
+	}
+	clientData.Challenge = encodeToHex(decodedBytes)
 
 	// Decode the attestationObject from Base64
 	decodedAttestationObjectBytes, err := base64.RawURLEncoding.DecodeString(WebauthnResponse.Response.AttestationObject)

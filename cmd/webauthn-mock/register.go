@@ -295,10 +295,14 @@ func decodeAuthData(authData []byte) AuthDataDecoded {
 	}
 
 	// Extract the x and y coordinates of the public key and convert them to big.Int
+	// The publicKey variable is CBOR-encoded (not regular PEM string), which after decoding it in publicKeyObject should give an output like this:
+	//		 1: 2,              -> Ellipic Curve key type
+	//		 3: -7,             -> ES256 signature algorithm
+	//		-1: 1,              -> P-256 curve
+	//		-2: 0x7885DB484..., -> X value
+	//		-3: 0x814F3DD31...  -> Y value
 	xBytes := coseMap[-2].([]byte)
 	yBytes := coseMap[-3].([]byte)
-	x := new(big.Int).SetBytes(xBytes)
-	y := new(big.Int).SetBytes(yBytes)
 
 	return AuthDataDecoded{
 		RpIdHash:            encodeToHex(rpIdHash),
@@ -308,8 +312,8 @@ func decodeAuthData(authData []byte) AuthDataDecoded {
 		CredentialIdLength:  credentialIdLength,
 		CredentialId:        encodeToHex(credentialId),
 		CredentialPublicKey: encodeToHex(credentialPublicKey),
-		PubKeyX:             "0x" + x.Text(16),
-		PubKeyY:             "0x" + y.Text(16),
+		PubKeyX:             encodeToHex(xBytes),
+		PubKeyY:             encodeToHex(yBytes),
 	}
 }
 

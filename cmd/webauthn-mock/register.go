@@ -123,7 +123,7 @@ type AuthDataDecoded struct {
 	PubKeyY             string `json:"pubKeyY"`
 }
 
-func register(challenge string, username string) (*virtualwebauthn.AttestationOptions, string) {
+func register(challenge []byte, username string) (*virtualwebauthn.AttestationOptions, string) {
 	// Create a new EC2 credential for the user
 	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
 
@@ -170,7 +170,7 @@ func createAttestationOptions(attestation *WebauthnAttestation) *virtualwebauthn
 }
 
 // starts a webauthn registration by creating a new user and generating an attestation challenge
-func startWebauthnRegister(challenge string, username string) *WebauthnAttestation {
+func startWebauthnRegister(challenge []byte, username string) *WebauthnAttestation {
 	// Create a new user for the webauthn registration
 	user := newWebauthnUser(username)
 
@@ -184,7 +184,7 @@ func startWebauthnRegister(challenge string, username string) *WebauthnAttestati
 
 	// If a challenge flag was provided, set it in the options
 	if len(challenge) > 0 {
-		options.Challenge = []byte(challenge)
+		options.Challenge = challenge
 	}
 
 	// Marshal the options to JSON for storage
@@ -318,14 +318,17 @@ func decodeAuthData(authData []byte) AuthDataDecoded {
 }
 
 func main() {
-	// Parse command line arguments
-	challenge := flag.String("challenge", "", "An optional argument to set a specific challenge")
-	username := flag.String("username", "", "An optional argument to set a specific username")
-	pretty := flag.String("pretty", "", "An optional argument to pretty print the JSON output")
+	// Load the challenge flag (only hex value accepted, with or without 0x prefix)
+	var challenge HexBytes
+	flag.Var(&challenge, "challenge", "Optional. Hex value only. If not provided, a random challenge will be generated.")
+	// Load the username flag and the pretty flag
+	username := flag.String("username", "", "Optional. Username for the webauthn registration. If not provided, a default username will be used.")
+	pretty := flag.String("pretty", "", "Optional. Pretty print the JSON output. If not provided, the JSON will be compact.")
+	// Parse the flags
 	flag.Parse()
 
 	// Run a webauthn attestation flow
-	attestationOptions, attestationResponse := register(*challenge, *username)
+	attestationOptions, attestationResponse := register(challenge, *username)
 
 	// Unmarshal the webauthn response to get the attestation object and clientDataJSON
 	var WebauthnResponse WebauthnResponse

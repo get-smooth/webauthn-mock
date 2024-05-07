@@ -1,3 +1,5 @@
+> This repository is currently under development and not ready for production use ⚠️
+
 # Webauthn Mock
 
 This repository contains a mock implementation of the WebAuthn API designed for testing and development purposes. It simulates the WebAuthn authentication process, providing developers with a tool to integrate and test WebAuthn functionalities without the need to deal with a browser and an authenticator.
